@@ -1,0 +1,290 @@
+/**
+ * Pyth Network price feed service
+ * Connects to Hermes for real-time price updates via Server-Sent Events
+ */
+
+import { HermesClient } from "@pythnetwork/hermes-client";
+import { config } from "../config/index.js";
+import { networkLogger } from "../logger.js";
+
+export interface PythPriceUpdate {
+  id: string;
+  price: {
+    price: string; // Price as string (needs to be parsed)
+    conf: string; // Confidence interval
+    expo: number; // Exponent for price (price * 10^expo)
+    publishTime: number; // Unix timestamp
+  };
+  emaPrice: {
+    price: string;
+    conf: string;
+    expo: number;
+    publishTime: number;
+  };
+}
+
+export interface NormalizedPriceData {
+  price: number; // Actual numeric price
+  confidence: number; // Confidence interval as a number
+  timestamp: number; // Publish time in milliseconds
+  expo: number; // Original exponent
+  priceUpdateData?: string[]; // Binary price update data from Pyth (hex strings with 0x prefix)
+}
+
+export type PriceUpdateCallback = (data: NormalizedPriceData) => void;
+
+/**
+ * Service for subscribing to Pyth Network price feeds via Hermes
+ */
+export class PythPriceService {
+  private client: HermesClient;
+  private eventSource?: any; // EventSource type from getPriceUpdatesStream
+  private feedId: string;
+  private callbacks: Set<PriceUpdateCallback> = new Set();
+  private isConnected: boolean = false;
+  private reconnectAttempts: number = 0;
+  private maxReconnectAttempts: number = 5;
+  private reconnectDelay: number = 2000; // Start with 2s delay
+
+  constructor(hermesUrl?: string, feedId?: string) {
+    this.client = new HermesClient(hermesUrl || config.pyth.hermesUrl, {});
+    this.feedId = feedId || config.pyth.feedId;
+  }
+
+  /**
+   * Subscribe to price updates
+   * @param callback Function to call when a price update is received
+   */
+  subscribe(callback: PriceUpdateCallback): () => void {
+    this.callbacks.add(callback);
+
+    // Start streaming if this is the first subscriber
+    if (this.callbacks.size === 1 && !this.isConnected) {
+      this.startStreaming();
+    }
+
+    // Return unsubscribe function
+    return () => {
+      this.callbacks.delete(callback);
+
+      // Stop streaming if no more subscribers
+      if (this.callbacks.size === 0) {
+        this.stopStreaming();
+      }
+    };
+  }
+
+  /**
+   * Get the latest price (one-time fetch)
+   */
+  async getLatestPrice(): Promise<NormalizedPriceData | null> {
+    try {
+      networkLogger.info(
+        { feedId: this.feedId },
+        "PythPriceService: Fetching latest price"
+      );
+
+      const priceUpdates = await this.client.getLatestPriceUpdates([
+        this.feedId,
+      ]);
+
+      if (!priceUpdates?.parsed || priceUpdates.parsed.length === 0) {
+        networkLogger.warn(
+          { feedId: this.feedId },
+          "PythPriceService: No price data available"
+        );
+        return null;
+      }
+
+      const priceData = priceUpdates.parsed[0];
+      const normalized = this.normalizePriceData(priceData);
+
+      networkLogger.success(
+        {
+          feedId: this.feedId,
+          price: normalized.price,
+          confidence: normalized.confidence,
+          timestamp: normalized.timestamp,
+        },
+        "PythPriceService: Latest price fetched"
+      );
+
+      return normalized;
+    } catch (error) {
+      networkLogger.error(
+        { error, feedId: this.feedId },
+        "PythPriceService: Error fetching latest price"
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Start streaming price updates via Server-Sent Events
+   */
+  private async startStreaming(): Promise<void> {
+    try {
+      networkLogger.info(
+        { feedId: this.feedId, hermesUrl: config.pyth.hermesUrl },
+        "PythPriceService: Starting price stream"
+      );
+
+      // Get the SSE stream
+      this.eventSource = await this.client.getPriceUpdatesStream(
+        [this.feedId],
+        {
+          encoding: "hex",
+          parsed: true,
+        }
+      );
+
+      this.eventSource.onmessage = (event: any) => {
+        try {
+          const data = JSON.parse(event.data);
+
+          if (data.parsed && data.parsed.length > 0) {
+            const priceData = data.parsed[0];
+            const normalized = this.normalizePriceData(priceData);
+
+            // Extract binary price update data if available
+            if (
+              data.binary &&
+              data.binary.data &&
+              Array.isArray(data.binary.data)
+            ) {
+              // Convert hex strings to 0x-prefixed format
+              normalized.priceUpdateData = data.binary.data.map((hex: string) =>
+                hex.startsWith("0x") ? hex : `0x${hex}`
+              );
+            }
+
+            networkLogger.info(
+              {
+                feedId: this.feedId,
+                price: normalized.price,
+                confidence: normalized.confidence,
+                priceUpdateCount: normalized.priceUpdateData?.length || 0,
+              },
+              "PythPriceService: Price update received"
+            );
+
+            // Notify all subscribers
+            this.callbacks.forEach((callback) => {
+              try {
+                callback(normalized);
+              } catch (error) {
+                networkLogger.error(
+                  { error },
+                  "PythPriceService: Error in price update callback"
+                );
+              }
+            });
+          }
+        } catch (error) {
+          networkLogger.error(
+            { error },
+            "PythPriceService: Error parsing price update"
+          );
+        }
+      };
+
+      this.eventSource.onerror = (error: any) => {
+        networkLogger.error(
+          { error, reconnectAttempts: this.reconnectAttempts },
+          "PythPriceService: EventSource error"
+        );
+        this.isConnected = false;
+
+        // Attempt to reconnect with exponential backoff
+        if (this.reconnectAttempts < this.maxReconnectAttempts) {
+          this.reconnectAttempts++;
+          const delay =
+            this.reconnectDelay * Math.pow(2, this.reconnectAttempts - 1);
+
+          networkLogger.warn(
+            {
+              delay,
+              attempt: this.reconnectAttempts,
+              maxAttempts: this.maxReconnectAttempts,
+            },
+            "PythPriceService: Reconnecting to price stream"
+          );
+
+          setTimeout(() => {
+            this.stopStreaming();
+            this.startStreaming();
+          }, delay);
+        } else {
+          networkLogger.error(
+            { maxAttempts: this.maxReconnectAttempts },
+            "PythPriceService: Max reconnect attempts reached"
+          );
+          this.stopStreaming();
+        }
+      };
+
+      this.eventSource.onopen = () => {
+        networkLogger.success(
+          { feedId: this.feedId, hermesUrl: config.pyth.hermesUrl },
+          "PythPriceService: Connected to Pyth Hermes price stream"
+        );
+        this.isConnected = true;
+        this.reconnectAttempts = 0; // Reset on successful connection
+      };
+    } catch (error) {
+      networkLogger.error(
+        { error, feedId: this.feedId },
+        "PythPriceService: Error starting price stream"
+      );
+      this.isConnected = false;
+    }
+  }
+
+  /**
+   * Stop streaming and clean up
+   */
+  private stopStreaming(): void {
+    if (this.eventSource) {
+      this.eventSource.close();
+      this.eventSource = undefined;
+      this.isConnected = false;
+    }
+  }
+
+  /**
+   * Normalize raw Pyth price data into a usable format
+   */
+  private normalizePriceData(data: any): NormalizedPriceData {
+    const priceStr = data.price?.price || "0";
+    const confStr = data.price?.conf || "0";
+    const expo = data.price?.expo || 0;
+    const publishTime = data.price?.publishTime || 0;
+
+    // Convert price and confidence using the exponent
+    // Price is given as an integer that must be multiplied by 10^expo
+    const price = Number(priceStr) * Math.pow(10, expo);
+    const confidence = Number(confStr) * Math.pow(10, expo);
+
+    return {
+      price,
+      confidence,
+      timestamp: publishTime * 1000, // Convert to milliseconds
+      expo,
+    };
+  }
+
+  /**
+   * Get connection status
+   */
+  isStreamConnected(): boolean {
+    return this.isConnected;
+  }
+
+  /**
+   * Clean up and close all connections
+   */
+  destroy(): void {
+    this.callbacks.clear();
+    this.stopStreaming();
+  }
+}

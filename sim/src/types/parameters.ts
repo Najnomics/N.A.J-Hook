@@ -1,0 +1,66 @@
+/**
+ * Type definitions for sequencer parameters and application state
+ */
+
+export interface SequencerParameters {
+  /** Update frequency in milliseconds (aligned with block time) */
+  updateFrequency: number;
+
+  /** Spread range in basis points */
+  spreadRange: {
+    min: number; // minimum spread in bps
+    max: number; // maximum spread in bps
+  };
+
+  /** Correlation factor (0.0 - 1.0) used in spread calculation */
+  correlationFactor: number;
+}
+
+export interface PriceDataPoint {
+  /** Unix timestamp in milliseconds */
+  timestamp: number;
+
+  /** Mid-market price */
+  midPrice: number;
+
+  /** Upper bound (mid + spread) */
+  upperBound: number;
+
+  /** Lower bound (mid - spread) */
+  lowerBound: number;
+
+  /** Optional confidence interval (standard deviation) from Pyth */
+  confidence?: number;
+
+  /** Marker indicating a sequencer update was posted at this point */
+  isUpdateMarker?: boolean;
+}
+
+export interface SpreadDataPoint {
+  /** Unix timestamp in milliseconds */
+  timestamp: number;
+
+  /** Spread in basis points */
+  spreadBps: number;
+
+  /** Spread as percentage */
+  spreadPercent: number;
+}
+
+export const PARAMETER_LIMITS = {
+  updateFrequency: {
+    min: 150, // 150 milliseconds
+    max: 4000, // 4 seconds
+    step: 50, // 50ms increments
+  },
+  spreadRange: {
+    min: 1, // 1 bps (0.01%)
+    max: 25, // 25 bps (0.25%)
+    step: 0.1, // 0.1 bps increments
+  },
+  correlationFactor: {
+    min: 0.0,
+    max: 1.0,
+    step: 0.01,
+  },
+};
