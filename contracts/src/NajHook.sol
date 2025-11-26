@@ -22,6 +22,8 @@ import {SafeCast} from "@uniswap/v4-core/src/libraries/SafeCast.sol";
 
 import {ISwapHandler} from "@interfaces/ISwapHandler.sol";
 import {IStrategyAdapter} from "@interfaces/IStrategyAdapter.sol";
+import {IEigenVerifier} from "@interfaces/IEigenVerifier.sol";
+import {FHE, InEuint128, euint128} from "@fhenixprotocol/cofhe-contracts/FHE.sol";
 
 /// @title NajHook - Proprietary AMM with Strategy-Based Pricing
 /// @notice Hook enabling market makers to launch proprietary pools with custom pricing strategies
@@ -59,6 +61,18 @@ contract NajHook is BaseHook, Ownable {
     /// @notice Authorized swap handler (TEE)
     address public swapHandler;
 
+    /// @notice EigenCompute attestation verifier
+    IEigenVerifier public eigenVerifier;
+
+    /// @notice Latest sealed batch id per pool
+    mapping(bytes32 => bytes32) public sealedBatchIds;
+
+    /// @notice Encrypted token0 batch volume per pool
+    mapping(bytes32 => euint128) public encryptedToken0Flow;
+
+    /// @notice Encrypted token1 batch volume per pool
+    mapping(bytes32 => euint128) public encryptedToken1Flow;
+
     ////////////////////////////////////////////////////
     ////////////////////// Errors //////////////////////
     ////////////////////////////////////////////////////
@@ -69,6 +83,11 @@ contract NajHook is BaseHook, Ownable {
     error NajHook__Unauthorized();
     error NajHook__InsufficientReserves();
     error NajHook__NoLiquidityAllowed();
+    error NajHook__EigenVerifierNotConfigured();
+    error NajHook__InvalidAttestation();
+    error NajHook__BatchMismatch();
+    error NajHook__UnsealedBatch();
+    error NajHook__InvalidHookData();
 
     ////////////////////////////////////////////////////
     ////////////////////// Events //////////////////////
@@ -77,8 +96,13 @@ contract NajHook is BaseHook, Ownable {
     event PoolConfigured(PoolId indexed poolId, address strategyAdapter, address thresholdAdapter);
     event LaunchpadSet(address indexed launchpad);
     event SwapHandlerSet(address indexed swapHandler);
+    event EigenVerifierSet(address indexed eigenVerifier);
+    event BatchAttested(PoolId indexed poolId, bytes32 batchId, bytes32 mrEnclave, bytes32 mrSigner);
+    event BatchFinalized(PoolId indexed poolId, bytes32 batchId);
     event SwapRequested(PoolId indexed poolId, address sender, bool zeroForOne, int256 amountSpecified);
-    event SwapExecutedByTEE(PoolId indexed poolId, bool zeroForOne, int256 amountSpecified, uint256 price);
+    event SwapExecutedByTEE(
+        PoolId indexed poolId, bool zeroForOne, int256 amountSpecified, uint256 price, bytes32 batchId
+    );
 
     ////////////////////////////////////////////////////
     ////////////////////// Modifiers ///////////////////
@@ -120,6 +144,14 @@ contract NajHook is BaseHook, Ownable {
         emit SwapHandlerSet(_swapHandler);
     }
 
+    /// @notice Configure EigenCompute verifier contract
+    /// @param _eigenVerifier Address of verifier
+    function setEigenVerifier(address _eigenVerifier) external onlyOwner {
+        if (_eigenVerifier == address(0)) revert NajHook__EigenVerifierNotConfigured();
+        eigenVerifier = IEigenVerifier(_eigenVerifier);
+        emit EigenVerifierSet(_eigenVerifier);
+    }
+
     /// @notice Configure a pool with strategy and threshold adapters
     /// @dev Called by launchpad when initializing a pool
     /// @param key The pool key
@@ -137,6 +169,46 @@ contract NajHook is BaseHook, Ownable {
             PoolConfig({strategyAdapter: strategyAdapter, thresholdAdapter: thresholdAdapter, initialized: true});
 
         emit PoolConfigured(key.toId(), strategyAdapter, thresholdAdapter);
+    }
+
+    /// @notice Store encrypted batch metadata following EigenCompute attestation
+    function submitBatchAttestation(
+        PoolKey calldata key,
+        bytes32 batchId,
+        bytes calldata attestation,
+        InEuint128 calldata encryptedToken0Volume,
+        InEuint128 calldata encryptedToken1Volume
+    ) external onlySwapHandler {
+        bytes32 poolId = PoolId.unwrap(key.toId());
+
+        if (!poolConfigs[poolId].initialized) revert NajHook__PoolNotConfigured();
+        if (address(eigenVerifier) == address(0)) revert NajHook__EigenVerifierNotConfigured();
+        if (batchId == bytes32(0)) revert NajHook__BatchMismatch();
+
+        bytes32 batchHash = keccak256(abi.encode(block.chainid, poolId, batchId));
+        (bool valid, bytes32 mrEnclave, bytes32 mrSigner) = eigenVerifier.verifyAttestation(attestation, batchHash);
+        if (!valid) revert NajHook__InvalidAttestation();
+
+        sealedBatchIds[poolId] = batchId;
+        encryptedToken0Flow[poolId] = FHE.asEuint128(encryptedToken0Volume);
+        encryptedToken1Flow[poolId] = FHE.asEuint128(encryptedToken1Volume);
+
+        FHE.allowThis(encryptedToken0Flow[poolId]);
+        FHE.allowThis(encryptedToken1Flow[poolId]);
+
+        emit BatchAttested(key.toId(), batchId, mrEnclave, mrSigner);
+    }
+
+    /// @notice Clear encrypted state when batch completes
+    function finalizeBatch(PoolKey calldata key, bytes32 batchId) external onlySwapHandler {
+        bytes32 poolId = PoolId.unwrap(key.toId());
+        if (sealedBatchIds[poolId] != batchId) revert NajHook__BatchMismatch();
+
+        sealedBatchIds[poolId] = bytes32(0);
+        encryptedToken0Flow[poolId] = euint128.wrap(0);
+        encryptedToken1Flow[poolId] = euint128.wrap(0);
+
+        emit BatchFinalized(key.toId(), batchId);
     }
 
     ////////////////////////////////////////////////////
@@ -246,7 +318,12 @@ contract NajHook is BaseHook, Ownable {
         override
         returns (bytes4, BeforeSwapDelta, uint24)
     {
-        (address user) = abi.decode(hookData, (address));
+        (address user, bytes32 batchId) = hookData.length == 0
+            ? (sender, bytes32(0))
+            : abi.decode(hookData, (address, bytes32));
+
+        if (user == address(0)) user = sender;
+
         bytes32 poolId = PoolId.unwrap(key.toId());
         PoolConfig memory config = poolConfigs[poolId];
 
@@ -255,7 +332,9 @@ contract NajHook is BaseHook, Ownable {
 
         // Check if caller is authorized SwapHandler (TEE)
         if (sender == swapHandler) {
-            return _executeSwapForTEE(poolId, key, config, params, user);
+            if (batchId == bytes32(0)) revert NajHook__InvalidHookData();
+            if (sealedBatchIds[poolId] != batchId) revert NajHook__UnsealedBatch();
+            return _executeSwapForTEE(poolId, key, config, params, user, batchId);
         } else {
             emit SwapRequested(key.toId(), sender, params.zeroForOne, params.amountSpecified);
             uint256 amountTaken = uint256(-int256(params.amountSpecified));
@@ -272,7 +351,8 @@ contract NajHook is BaseHook, Ownable {
         PoolKey calldata key,
         PoolConfig memory config,
         SwapParams calldata params,
-        address user
+        address user,
+        bytes32 batchId
     ) internal returns (bytes4, BeforeSwapDelta, uint24) {
         // Get price from strategy adapter with swap direction and amount
         uint256 price = IStrategyAdapter(config.strategyAdapter)
@@ -290,9 +370,9 @@ contract NajHook is BaseHook, Ownable {
         BeforeSwapDelta beforeSwapDelta =
             _calculateSwapDelta(key, params.amountSpecified, params.zeroForOne, price, user);
 
-        emit SwapExecutedByTEE(key.toId(), params.zeroForOne, params.amountSpecified, price);
+        emit SwapExecutedByTEE(key.toId(), params.zeroForOne, params.amountSpecified, price, batchId);
 
-        return (IHooks.beforeSwap.selector, toBeforeSwapDelta(0, 0), 0);
+        return (IHooks.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
     }
 
     /// @notice Calculate swap delta based on strategy price
@@ -325,7 +405,6 @@ contract NajHook is BaseHook, Ownable {
                 specifiedDelta = int128(int256(amountIn)); // Hook takes token0
                 unspecifiedDelta = -int128(int256(amountOut)); // Hook gives token1
 
-                //key.currency0.take(poolManager, address(this), amountIn, true);
             } else {
                 // Selling token1 for token0
                 // amountOut = amountIn * 1e18 / price
@@ -334,8 +413,6 @@ contract NajHook is BaseHook, Ownable {
                 specifiedDelta = int128(int256(amountIn)); // Hook takes token1
                 unspecifiedDelta = -int128(int256(amountOut)); // Hook gives token0
 
-                key.currency0.take(poolManager, address(this), amountIn, true);
-                key.currency1.settle(poolManager, address(this), amountOut, true);
             }
 
             key.currency1.transfer(user, amountOut);
@@ -352,8 +429,6 @@ contract NajHook is BaseHook, Ownable {
 
                 specifiedDelta = -int128(int256(amountOut)); // Hook gives token1
                 unspecifiedDelta = int128(int256(amountIn)); // Hook takes token0
-                key.currency0.take(poolManager, address(this), amountIn, true);
-                key.currency1.settle(poolManager, address(this), amountOut, true);
             } else {
                 // Want exact token0 out, calculate token1 in
                 // amountIn = amountOut * price / 1e18
@@ -361,8 +436,6 @@ contract NajHook is BaseHook, Ownable {
 
                 specifiedDelta = -int128(int256(amountOut)); // Hook gives token0
                 unspecifiedDelta = int128(int256(amountIn)); // Hook takes token1
-                key.currency0.take(poolManager, address(this), amountIn, true);
-                key.currency1.settle(poolManager, address(this), amountOut, true);
             }
         }
 

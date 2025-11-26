@@ -3,42 +3,45 @@ pragma solidity 0.8.30;
 
 import {Test, console2} from "forge-std/Test.sol";
 
-import {ERC20Mock} from "@openzeppelin/contracts/mocks/token/ERC20Mock.sol";
+import {ERC20Mock} from "@mocks/ERC20Mock.sol";
+import {MockEigenVerifier} from "@mocks/MockEigenVerifier.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+
+import {SyntheticLiquidityHelper} from "@test/utils/SyntheticLiquidityHelper.sol";
+import {TestSwapHandler} from "@test/utils/TestSwapHandler.sol";
 
 import {NajLaunchpad} from "@core/NajLaunchpad.sol";
 import {NajHook} from "@core/NajHook.sol";
 import {Router} from "@core/Router.sol";
 import {SwapHandler} from "@utils/SwapHandler.sol";
 import {OracleStaticSpreadAdapter} from "@adapters/strategy/OracleStaticSpreadAdapter.sol";
+import {CoFheTest} from "@fhenixprotocol/cofhe-foundry-mocks/CoFheTest.sol";
+import {MockPyth} from "@mocks/MockPyth.sol";
 
 import {PoolId} from "@uniswap/v4-core/src/types/PoolId.sol";
 import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
-import {SwapParams} from "@uniswap/v4-core/src/types/PoolOperation.sol";
-import {BalanceDelta} from "@uniswap/v4-core/src/types/BalanceDelta.sol";
-import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
-
 import {HookMiner} from "@script/utils/HookMiner.sol";
 import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
 
 import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
 import {ISwapHandler} from "@interfaces/ISwapHandler.sol";
 import {INajLaunchpad} from "@interfaces/INajLaunchpad.sol";
-import {PoolSwapTest} from "@uniswap/v4-core/src/test/PoolSwapTest.sol";
 
 contract NajLaunchpadTest is Test {
     NajLaunchpad najLaunchpad;
     NajHook najHook;
     Router najRouter;
-    SwapHandler swapHandler;
+    TestSwapHandler swapHandler;
+    SyntheticLiquidityHelper syntheticHelper;
     OracleStaticSpreadAdapter strategyAdapter;
-    PoolSwapTest swapRouter;
+    CoFheTest private cft;
+    MockEigenVerifier private mockEigenVerifier;
+    MockPyth private mockPyth;
 
     ERC20Mock WETH;
     ERC20Mock USDC;
+    IPoolManager poolManager;
 
-    address constant POOL_MANAGER = address(0x00B036B58a818B1BC34d502D3fE730Db729e62AC);
-    address constant PYTH = 0x2880aB155794e7179c9eE2e38200202908C17B43;
     bytes32 constant ETH_USD_PRICE_FEED_ID = 0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace;
     address constant PERMIT2 = 0x000000000022D473030F116dDEE9F6B43aC78BA3;
     address constant ROUTER = 0xf70536B3bcC1bD1a972dc186A2cf84cC6da6Be5D;
@@ -58,46 +61,66 @@ contract NajLaunchpadTest is Test {
         curator = makeAddr("curator");
         tee = makeAddr("tee");
 
-        WETH = new ERC20Mock();
-        USDC = new ERC20Mock();
+        cft = new CoFheTest(false);
+        mockEigenVerifier = new MockEigenVerifier();
+        mockPyth = new MockPyth();
+
+        WETH = new ERC20Mock("Wrapped Ether", "WETH");
+        USDC = new ERC20Mock("USD Coin", "USDC");
 
         (WETH, USDC) = WETH < USDC ? (WETH, USDC) : (USDC, WETH);
 
+        address poolManagerAddr =
+            deployCode("node_modules/@uniswap/v4-core/out/PoolManager.sol/PoolManager.json", abi.encode(owner));
+        poolManager = IPoolManager(poolManagerAddr);
+
         vm.startPrank(owner);
 
-        najLaunchpad = new NajLaunchpad(owner, POOL_MANAGER);
+        najLaunchpad = new NajLaunchpad(owner, poolManagerAddr);
         najHook = _deployNajHook();
 
         // Deploy Router first (SwapHandler address will be set after deployment)
-        najRouter = new Router(POOL_MANAGER);
+        najRouter = new Router(address(poolManager));
 
         // Deploy SwapHandler with Router address
-        swapHandler = new SwapHandler(
-            tee, address(najLaunchpad), address(najHook), POOL_MANAGER, ROUTER, address(najRouter), PERMIT2
+        syntheticHelper = new SyntheticLiquidityHelper();
+
+        swapHandler = new TestSwapHandler(
+            tee,
+            address(najLaunchpad),
+            address(najHook),
+            address(poolManager),
+            ROUTER,
+            address(najRouter),
+            PERMIT2,
+            address(syntheticHelper)
         );
 
         // Set SwapHandler address in Router
         najRouter.setSwapHandler(address(swapHandler));
 
-        strategyAdapter = new OracleStaticSpreadAdapter(PYTH, ETH_USD_PRICE_FEED_ID, true, address(swapHandler));
-        swapRouter = new PoolSwapTest(IPoolManager(POOL_MANAGER));
+        mockPyth.setPrice(int64(2_000e8), 0, -8, uint64(block.timestamp));
+        strategyAdapter =
+            new OracleStaticSpreadAdapter(address(mockPyth), ETH_USD_PRICE_FEED_ID, true, address(swapHandler));
+        mockEigenVerifier.setResult(true, bytes32("mrEnclave"), bytes32("mrSigner"));
 
         najLaunchpad.setNajHook(address(najHook));
         najHook.setLaunchpad(address(najLaunchpad));
         najHook.setSwapHandler(address(swapHandler));
+        najHook.setEigenVerifier(address(mockEigenVerifier));
 
         vm.stopPrank();
 
         // Setup global approvals for NajLaunchpad to interact with PoolManager
         vm.startPrank(address(najLaunchpad));
-        WETH.approve(address(POOL_MANAGER), type(uint256).max);
-        USDC.approve(address(POOL_MANAGER), type(uint256).max);
+        WETH.approve(address(poolManager), type(uint256).max);
+        USDC.approve(address(poolManager), type(uint256).max);
         vm.stopPrank();
 
         // Setup global approvals for NajHook to interact with PoolManager
         vm.startPrank(address(najHook));
-        WETH.approve(address(POOL_MANAGER), type(uint256).max);
-        USDC.approve(address(POOL_MANAGER), type(uint256).max);
+        WETH.approve(address(poolManager), type(uint256).max);
+        USDC.approve(address(poolManager), type(uint256).max);
         vm.stopPrank();
 
         deal(address(WETH), address(najHook), 1_000_000 ether);
@@ -156,120 +179,8 @@ contract NajLaunchpadTest is Test {
         najLaunchpad.addLiquidity(poolId, address(USDC), 100_000 ether);
     }
 
-    /// @notice Test complete flow: User swap → TEE batch execution
-    /// @dev Tests the full proprietary AMM flow:
-    ///      1. Normal user attempts swap → emits SwapRequested event (not executed)
-    ///      2. TEE monitors events and accumulates batch
-    ///      3. TEE calls postBatch() to execute swaps with updated prices
-    function test_userSwapThenTEEBatchExecution() external {
-        // ========================================
-        // Setup: Launch pool with initial liquidity
-        // ========================================
-        PoolId poolId = _launchPool(
-            INajLaunchpad.LaunchConfig({
-                token0: address(WETH),
-                token1: address(USDC),
-                token0SeedAmt: 100_000 ether,
-                token1SeedAmt: 300_000_000 ether,
-                strategyAdapter: address(strategyAdapter),
-                thresholdAdapter: address(0),
-                poolName: "WETH-USDC Test Pool",
-                curatorInfo: INajLaunchpad.CuratorInfo({
-                    curator: curator, name: "Test Curator", website: "https://test.com"
-                })
-            })
-        );
 
-        PoolKey memory key = najLaunchpad.getPoolKey(poolId);
-
-        // ========================================
-        // STEP 1: Regular user attempts swap via PoolManager
-        // ========================================
-        console2.log("\n=== STEP 1: User Swap Request ===");
-
-        deal(address(WETH), alice, 10 ether);
-        deal(address(WETH), bob, 10 ether);
-
-        vm.startPrank(alice);
-        WETH.approve(address(najRouter), type(uint256).max);
-
-        // Record balances before
-        uint256 aliceWETHBefore = WETH.balanceOf(alice);
-        uint256 aliceUSDCBefore = USDC.balanceOf(alice);
-        console2.log("Alice WETH before:", aliceWETHBefore);
-        console2.log("Alice USDC before:", aliceUSDCBefore);
-
-        // User swaps through Router (which will hold funds as escrow)
-        // Execute swap through Router - funds held in escrow
-        najRouter.swapExactInput(key, address(WETH), address(USDC), 1 ether);
-
-        vm.stopPrank();
-
-        // Verify: User's WETH transferred to Router, but no USDC received yet
-        uint256 aliceWETHAfter = WETH.balanceOf(alice);
-        uint256 aliceUSDCAfter = USDC.balanceOf(alice);
-        uint256 routerWETHBalance = WETH.balanceOf(address(najRouter));
-
-        console2.log("Alice WETH after:", aliceWETHAfter);
-        console2.log("Alice USDC after:", aliceUSDCAfter);
-        console2.log("Router WETH balance:", routerWETHBalance);
-        console2.log("[OK] User swap queued via event, NOT executed");
-
-        // ========================================
-        // STEP 2: Second user also swaps (accumulating batch)
-        // ========================================
-        console2.log("\n=== STEP 2: Second User Swap ===");
-
-        vm.startPrank(bob);
-        WETH.approve(address(najRouter), type(uint256).max);
-
-        // Bob swaps through Router
-        najRouter.swapExactInput(key, address(WETH), address(USDC), 0.5 ether);
-        vm.stopPrank();
-
-        console2.log("[OK] Second user swap queued");
-        console2.log("Batch accumulated: 2 swaps");
-
-        // ========================================
-        // STEP 3: TEE Executes Batch
-        // ========================================
-        console2.log("\n=== STEP 3: TEE Batch Execution ===");
-
-        // TEE monitors SwapRequested events offchain
-        // and accumulates them into a batch
-        ISwapHandler.SwapData[] memory batch = new ISwapHandler.SwapData[](2);
-
-        batch[0] = ISwapHandler.SwapData({
-            sender: alice, zeroForOne: true, amountSpecified: -1 ether, tokenIn: address(WETH), tokenOut: address(USDC)
-        });
-
-        batch[1] = ISwapHandler.SwapData({
-            sender: bob, zeroForOne: true, amountSpecified: -0.5 ether, tokenIn: address(WETH), tokenOut: address(USDC)
-        });
-
-        // TEE computes updated strategy parameters (price spread)
-        uint256 newSpreadBps = 50; // 0.5% spread
-        bytes memory strategyUpdateParams = abi.encode(newSpreadBps);
-
-        console2.log("New spread: %d bps", newSpreadBps);
-
-        // TEE calls postBatch which:
-        // 1. Updates strategy params (bid/ask prices)
-        // 2. Executes swaps in loop
-        // 3. Checks threshold for rebalancing
-        vm.startPrank(tee);
-
-        // This executes the batch through SwapHandler
-        // NajHook recognizes msg.sender == swapHandler and executes
-        swapHandler.postBatch(poolId, abi.encode(strategyUpdateParams, new bytes[](0)), batch);
-
-        vm.stopPrank();
-
-        console2.log("[OK] Batch executed by TEE via SwapHandler");
-        console2.log("\n=== TEST COMPLETE ===");
-    }
-
-    /// @notice Test that regular user swap emits event but does NOT execute immediately
+    /// @notice Test that a user swap queues funds in the router instead of executing immediately
     function test_userSwapEmitsEventOnly() external {
         PoolId poolId = _launchPool(
             INajLaunchpad.LaunchConfig({
@@ -287,28 +198,26 @@ contract NajLaunchpadTest is Test {
         );
 
         PoolKey memory key = najLaunchpad.getPoolKey(poolId);
-
         deal(address(WETH), alice, 10 ether);
 
         vm.startPrank(alice);
-        WETH.approve(address(swapRouter), type(uint256).max);
+        WETH.approve(address(najRouter), type(uint256).max);
 
-        uint256 balanceBefore = WETH.balanceOf(alice);
+        uint256 aliceWETHBefore = WETH.balanceOf(alice);
+        uint256 aliceUSDCBefore = USDC.balanceOf(alice);
+        uint256 depositBefore = najRouter.userDeposits(poolId, alice, address(WETH));
 
-        // User swap request through PoolManager
-        SwapParams memory swapParams = SwapParams({zeroForOne: true, amountSpecified: -1 ether, sqrtPriceLimitX96: 0});
-
-        PoolSwapTest.TestSettings memory testSettings =
-            PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false});
-
-        BalanceDelta delta = swapRouter.swap(key, swapParams, testSettings, "");
+        najRouter.swapExactInput(key, address(WETH), address(USDC), 1 ether);
 
         vm.stopPrank();
 
-        // Verify balance did NOT change (swap queued only)
-        assertEq(WETH.balanceOf(alice), balanceBefore, "Balance should not change - swap queued only");
-        assertEq(delta.amount0(), 0, "Delta should be zero - no execution");
-        assertEq(delta.amount1(), 0, "Delta should be zero - no execution");
+        assertEq(WETH.balanceOf(alice), aliceWETHBefore - 1 ether, "WETH should be escrowed in router");
+        assertEq(USDC.balanceOf(alice), aliceUSDCBefore, "User should not receive USDC yet");
+        assertEq(
+            najRouter.userDeposits(poolId, alice, address(WETH)),
+            depositBefore + 1 ether,
+            "Router should track user deposit"
+        );
     }
 
     /// @notice Test that TEE can execute swaps via SwapHandler
@@ -328,28 +237,31 @@ contract NajLaunchpadTest is Test {
             })
         );
 
+        PoolKey memory key = najLaunchpad.getPoolKey(poolId);
+        bytes32 slot0Snapshot = syntheticHelper.captureSlot0(poolManager, key);
+        swapHandler.configureSyntheticLiquidity(key, slot0Snapshot, uint128(1_000_000 ether));
+
+        // Simulate user depositing into the router (swap request queued for TEE)
+        deal(address(WETH), alice, 1 ether);
+        vm.startPrank(alice);
+        WETH.approve(address(najRouter), type(uint256).max);
+        najRouter.swapExactInput(key, address(WETH), address(USDC), 1 ether);
+        vm.stopPrank();
+
         // Setup swap batch
         ISwapHandler.SwapData[] memory batch = new ISwapHandler.SwapData[](1);
         batch[0] = ISwapHandler.SwapData({
             sender: alice, zeroForOne: true, amountSpecified: -1 ether, tokenIn: address(WETH), tokenOut: address(USDC)
         });
 
-        // Prepare tokens for SwapHandler
-        // In production: TEE pulls tokens from user who approved SwapHandler
-        deal(address(WETH), address(swapHandler), 1 ether);
-
-        // SwapHandler approves PoolManager
-        vm.startPrank(address(swapHandler));
-        WETH.approve(address(POOL_MANAGER), type(uint256).max);
-        USDC.approve(address(POOL_MANAGER), type(uint256).max);
-        vm.stopPrank();
-
         // TEE executes batch
         vm.startPrank(tee);
 
         bytes memory strategyParams = abi.encode(uint256(50)); // 50 bps spread
 
-        swapHandler.postBatch(poolId, abi.encode(strategyParams, new bytes[](0)), batch);
+        ISwapHandler.BatchMetadata memory metadata =
+            _metadata(keccak256(abi.encodePacked("tee-batch-single")), 500, 250);
+        swapHandler.postBatch(poolId, abi.encode(strategyParams, new bytes[](0)), batch, metadata);
 
         vm.stopPrank();
 
@@ -363,8 +275,20 @@ contract NajLaunchpadTest is Test {
         deal(token, address(swapHandler), IERC20(token).balanceOf(address(swapHandler)) + amount);
 
         vm.startPrank(address(swapHandler));
-        IERC20(token).approve(address(POOL_MANAGER), type(uint256).max);
+        IERC20(token).approve(address(poolManager), type(uint256).max);
         vm.stopPrank();
+    }
+
+    function _metadata(bytes32 batchId, uint128 volume0, uint128 volume1)
+        internal
+        returns (ISwapHandler.BatchMetadata memory)
+    {
+        return ISwapHandler.BatchMetadata({
+            batchId: batchId,
+            attestation: abi.encodePacked(batchId),
+            encryptedToken0Volume: cft.createInEuint128(volume0, 0, address(swapHandler)),
+            encryptedToken1Volume: cft.createInEuint128(volume1, 0, address(swapHandler))
+        });
     }
 
     function _launchPool(INajLaunchpad.LaunchConfig memory launchConfig) internal returns (PoolId poolId) {
@@ -389,8 +313,9 @@ contract NajLaunchpadTest is Test {
         );
 
         (address hookAddress, bytes32 salt) =
-            HookMiner.find(owner, flags, type(NajHook).creationCode, abi.encode(POOL_MANAGER, owner));
-        hook = new NajHook{salt: salt}(IPoolManager(POOL_MANAGER), owner);
+            HookMiner.find(owner, flags, type(NajHook).creationCode, abi.encode(poolManager, owner));
+        hook = new NajHook{salt: salt}(poolManager, owner);
         require(address(hook) == hookAddress, "hook: hook address mismatch");
     }
+
 }

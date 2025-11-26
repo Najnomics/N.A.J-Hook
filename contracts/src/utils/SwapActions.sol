@@ -15,6 +15,7 @@ import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
 import {SafeCast} from "@uniswap/v4-core/src/libraries/SafeCast.sol";
 import {StateLibrary} from "@uniswap/v4-core/src/libraries/StateLibrary.sol";
 import {SwapParams} from "@uniswap/v4-core/src/types/PoolOperation.sol";
+import {CurrencySettler} from "@uniswap/v4-core/test/utils/CurrencySettler.sol";
 
 import {IV4Router} from "@uniswap/v4-periphery/src/interfaces/IV4Router.sol";
 import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
@@ -37,6 +38,7 @@ contract SwapActions is ReentrancyGuardTransient {
     using SafeERC20 for IERC20;
     using PoolIdLibrary for PoolKey;
     using StateLibrary for IPoolManager;
+    using CurrencySettler for Currency;
 
     IUniversalRouter immutable router;
     IPermit2 immutable PERMIT2;
@@ -114,7 +116,7 @@ contract SwapActions is ReentrancyGuardTransient {
 
     /// @notice Execute exact input swap directly via PoolManager (must be called within unlock)
     /// @dev amountSpecified should be NEGATIVE for exact input (Uniswap V4 convention)
-    function _swapExactInputUnlockedV4(ISwapHandler.SwapData memory swapData, PoolKey memory key)
+    function _swapExactInputUnlockedV4(ISwapHandler.SwapData memory swapData, PoolKey memory key, bytes32 batchId)
         internal
         returns (uint256 amountReceived)
     {
@@ -136,8 +138,10 @@ contract SwapActions is ReentrancyGuardTransient {
                 amountSpecified: amountSpecified,
                 sqrtPriceLimitX96: zeroForOne ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1
             }),
-            abi.encode(swapData.sender)
+            abi.encode(swapData.sender, batchId)
         );
+
+        _settleSwapDelta(key, swapDelta);
 
         // Get absolute amount for token transfers (always positive)
         uint256 amountIn =
@@ -156,6 +160,22 @@ contract SwapActions is ReentrancyGuardTransient {
             balance = address(this).balance;
         } else {
             balance = IERC20(_token).balanceOf(address(this));
+        }
+    }
+
+    function _settleSwapDelta(PoolKey memory key, BalanceDelta swapDelta) internal {
+        int128 delta0 = swapDelta.amount0();
+        if (delta0 < 0) {
+            key.currency0.settle(poolManager, address(this), uint256(uint128(-delta0)), false);
+        } else if (delta0 > 0) {
+            key.currency0.take(poolManager, address(this), uint256(uint128(delta0)), true);
+        }
+
+        int128 delta1 = swapDelta.amount1();
+        if (delta1 < 0) {
+            key.currency1.settle(poolManager, address(this), uint256(uint128(-delta1)), false);
+        } else if (delta1 > 0) {
+            key.currency1.take(poolManager, address(this), uint256(uint128(delta1)), true);
         }
     }
 }
