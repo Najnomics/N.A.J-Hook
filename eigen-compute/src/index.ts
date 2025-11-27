@@ -13,8 +13,6 @@ const startedAt = new Date().toISOString();
 const BatchSchema = z.object({
   poolId: z.string().regex(/^0x[0-9a-fA-F]{64}$/),
   batchId: z.string().regex(/^0x[0-9a-fA-F]+$/),
-  encryptedToken0Volume: z.string().min(4),
-  encryptedToken1Volume: z.string().min(4),
   strategyParams: z
     .object({
       baseSpreadBps: z.number().int().min(0).max(10_000).optional(),
@@ -26,6 +24,17 @@ const BatchSchema = z.object({
     timestamp: z.number().int().positive(),
     pythConfidenceBps: z.number().int().optional(),
   }),
+  orders: z
+    .array(
+      z.object({
+        sender: z.string().regex(/^0x[0-9a-fA-F]{40}$/),
+        zeroForOne: z.boolean(),
+        amountSpecified: z.string(),
+        tokenIn: z.string().regex(/^0x[0-9a-fA-F]{40}$/),
+        tokenOut: z.string().regex(/^0x[0-9a-fA-F]{40}$/),
+      })
+    )
+    .min(1),
 }) satisfies z.ZodType<BatchRequest>;
 
 const app = express();
@@ -56,14 +65,14 @@ app.post("/batch", async (req, res) => {
     const computation = executeStrategy(parsed);
     const attestation = createAttestation({
       settlement: computation.settlement,
-      sealedVolumes: computation.sealedVolumes,
+      sealedVolumes: computation.encryptedVolumes,
       mnemonic: appConfig.mnemonic,
     });
 
     res.json({
       ok: true,
       settlement: computation.settlement,
-      sealedVolumes: computation.sealedVolumes,
+      encryptedVolumes: computation.encryptedVolumes,
       attestation,
     });
   } catch (err) {

@@ -52,6 +52,37 @@ export const batcherAbi = [
           { name: "tokenOut", type: "address", internalType: "address" },
         ],
       },
+      {
+        name: "metadata",
+        type: "tuple",
+        internalType: "struct ISwapHandler.BatchMetadata",
+        components: [
+          { name: "batchId", type: "bytes32", internalType: "bytes32" },
+          { name: "attestation", type: "bytes", internalType: "bytes" },
+          {
+            name: "encryptedToken0Volume",
+                  type: "tuple",
+                  internalType: "struct InEuint128",
+                  components: [
+                    { name: "ctHash", type: "uint256", internalType: "uint256" },
+                    { name: "securityZone", type: "uint8", internalType: "uint8" },
+                    { name: "utype", type: "uint8", internalType: "uint8" },
+                    { name: "signature", type: "bytes", internalType: "bytes" },
+                  ],
+          },
+          {
+            name: "encryptedToken1Volume",
+                  type: "tuple",
+                  internalType: "struct InEuint128",
+                  components: [
+                    { name: "ctHash", type: "uint256", internalType: "uint256" },
+                    { name: "securityZone", type: "uint8", internalType: "uint8" },
+                    { name: "utype", type: "uint8", internalType: "uint8" },
+                    { name: "signature", type: "bytes", internalType: "bytes" },
+                  ],
+          },
+        ],
+      },
     ],
     outputs: [],
     stateMutability: "nonpayable",

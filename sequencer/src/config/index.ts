@@ -46,6 +46,9 @@ const EnvSchema = z.object({
   EXPRESS_PORT: z.coerce.number().int().positive().default(8080),
   EXPRESS_HOST: z.string().default("0.0.0.0"),
   BATCHER_PRIVATE_KEY: hexPrivateKey,
+  EIGEN_COMPUTE_URL: z.string().url(),
+  EIGEN_COMPUTE_API_KEY: z.string().optional(),
+  DEFAULT_ORACLE_PRICE: z.coerce.number().positive().default(2000),
 });
 
 const parsed = EnvSchema.safeParse(process.env);
@@ -73,4 +76,7 @@ export const config = {
   expressPort: parsed.data.EXPRESS_PORT,
   expressHost: parsed.data.EXPRESS_HOST,
   batcherPrivateKey: parsed.data.BATCHER_PRIVATE_KEY,
+  eigenComputeUrl: parsed.data.EIGEN_COMPUTE_URL,
+  eigenComputeApiKey: parsed.data.EIGEN_COMPUTE_API_KEY ?? null,
+  defaultOraclePrice: parsed.data.DEFAULT_ORACLE_PRICE,
 } as const;

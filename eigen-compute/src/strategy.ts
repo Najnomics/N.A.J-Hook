@@ -1,6 +1,12 @@
 import { appConfig } from "./config.js";
-import { decryptVolume, sealVolume } from "./fhenix.js";
-import type { BatchRequest, BatchComputation, BatchSettlement, Hex } from "./types.js";
+import { encryptVolume } from "./fhenix.js";
+import type {
+  BatchRequest,
+  BatchComputation,
+  BatchSettlement,
+  Hex,
+  BatchOrderInput,
+} from "./types.js";
 
 const Q96 = 2 ** 96;
 
@@ -16,18 +22,32 @@ function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
 
-export function executeStrategy(batch: BatchRequest): BatchComputation {
-  const volume0 = decryptVolume(batch.encryptedToken0Volume, appConfig.fhenixSecret);
-  const volume1 = decryptVolume(batch.encryptedToken1Volume, appConfig.fhenixSecret);
+function aggregateOrders(orders: BatchOrderInput[]): { token0: bigint; token1: bigint } {
+  let token0 = 0n;
+  let token1 = 0n;
+  for (const order of orders) {
+    const amount = BigInt(order.amountSpecified);
+    if (order.zeroForOne) {
+      token0 += -amount; // amountSpecified is negative exact input
+      token1 += amount;
+    } else {
+      token0 += amount;
+      token1 += -amount;
+    }
+  }
+  return { token0, token1 };
+}
 
+export function executeStrategy(batch: BatchRequest): BatchComputation {
+  const flow = aggregateOrders(batch.orders);
   const oraclePrice = batch.metadata.oraclePrice;
   const params = batch.strategyParams ?? {};
   const baseSpread = params.baseSpreadBps ?? appConfig.strategySpreadBps;
   const inventorySkew = params.inventorySkewBps ?? 0;
   const spreadBps = clamp(baseSpread + inventorySkew, 0, 10_000);
 
-  const token0Flow = volume0 - volume1;
-  const token1Flow = -token0Flow;
+  const token0Flow = flow.token0;
+  const token1Flow = flow.token1;
 
   const grossPrice = oraclePrice * (1 + spreadBps / 10_000);
   const sqrtPriceX96 = priceToSqrtPriceX96(grossPrice);
@@ -41,12 +61,14 @@ export function executeStrategy(batch: BatchRequest): BatchComputation {
     deadline: batch.metadata.timestamp + 300,
   };
 
+  const encryptedVolumes = {
+    token0: encryptVolume(token0Flow < 0n ? -token0Flow : token0Flow, appConfig.fhenixSecret),
+    token1: encryptVolume(token1Flow < 0n ? -token1Flow : token1Flow, appConfig.fhenixSecret),
+  };
+
   return {
     settlement,
-    sealedVolumes: {
-      token0: sealVolume(volume0, appConfig.fhenixSecret),
-      token1: sealVolume(volume1, appConfig.fhenixSecret),
-    },
+    encryptedVolumes,
     netFlow: {
       token0: token0Flow,
       token1: token1Flow,

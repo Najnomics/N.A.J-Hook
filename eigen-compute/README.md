@@ -63,8 +63,15 @@ curl -X POST http://localhost:8080/batch \
         "poolId": "0xabc...123",
         "batchId": "0x01",
         "metadata": { "oraclePrice": 2000, "timestamp": 1730000000 },
-        "encryptedToken0Volume": "0xdeadbeef",
-        "encryptedToken1Volume": "0xfeedface",
+        "orders": [
+          {
+            "sender": "0x1234...abcd",
+            "zeroForOne": true,
+            "amountSpecified": "-1000000000000000000",
+            "tokenIn": "0xdead...beef",
+            "tokenOut": "0xfeed...cafe"
+          }
+        ],
         "strategyParams": { "baseSpreadBps": 25 }
       }'
 ```
@@ -79,12 +86,22 @@ Response:
     "batchId": "0x01",
     "sqrtPriceX96": "0x1234...",
     "token0Flow": "1234500000000000000",
-    "token1Flow": "-987000000",
+    "token1Flow": "-1234500000000000000",
     "deadline": 1730000300
   },
-  "sealedVolumes": {
-    "token0": "0xfd...01",
-    "token1": "0xaa...ff"
+  "encryptedVolumes": {
+    "token0": {
+      "ctHash": "0x4c3d...",
+      "securityZone": 0,
+      "utype": 6,
+      "signature": "0xffe0..."
+    },
+    "token1": {
+      "ctHash": "0xab12...",
+      "securityZone": 0,
+      "utype": 6,
+      "signature": "0x11aa..."
+    }
   },
   "attestation": "0x8af7..."
 }

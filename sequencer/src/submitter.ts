@@ -5,6 +5,7 @@ import { config } from "./config/index.js";
 import { createChainWalletClient, customChain } from "./clients/viem.js";
 import { logger } from "./logger.js";
 import type { PoolId, SwapOrder } from "./types.js";
+import { generateBatchId, requestEigenComputation } from "./clients/eigenCompute.js";
 
 export interface SubmitBatchResult {
   txHash: Hex;
@@ -33,6 +34,30 @@ export async function initBatchSubmitter(): Promise<SubmitBatchFn> {
     }
     const start = Date.now();
     try {
+      const batchId = generateBatchId(poolId);
+      const eigenResult = await requestEigenComputation({
+        poolId,
+        batchId,
+        orders,
+      });
+
+      const metadataArg = {
+        batchId: eigenResult.settlement.batchId as Hex,
+        attestation: eigenResult.attestation,
+        encryptedToken0Volume: {
+          ctHash: BigInt(eigenResult.encryptedVolumes.token0.ctHash),
+          securityZone: eigenResult.encryptedVolumes.token0.securityZone,
+          utype: eigenResult.encryptedVolumes.token0.utype,
+          signature: eigenResult.encryptedVolumes.token0.signature,
+        },
+        encryptedToken1Volume: {
+          ctHash: BigInt(eigenResult.encryptedVolumes.token1.ctHash),
+          securityZone: eigenResult.encryptedVolumes.token1.securityZone,
+          utype: eigenResult.encryptedVolumes.token1.utype,
+          signature: eigenResult.encryptedVolumes.token1.signature,
+        },
+      };
+
       const txHash = await walletClient.writeContract({
         abi: batcherAbi,
         address: config.batchTargetAddress as Hex,
@@ -49,11 +74,18 @@ export async function initBatchSubmitter(): Promise<SubmitBatchFn> {
             tokenIn: order.tokenIn,
             tokenOut: order.tokenOut,
           })),
+          metadataArg,
         ],
       });
       const elapsedMs = Date.now() - start;
       logger.info(
-        { txHash, poolId, orders: orders.length, elapsedMs },
+        {
+          txHash,
+          poolId,
+          orders: orders.length,
+          elapsedMs,
+          batchId: metadataArg.batchId,
+        },
         "Batch submitted"
       );
       return { txHash, ordersSent: orders.length, elapsedMs };

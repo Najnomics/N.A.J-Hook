@@ -46,3 +46,26 @@ export interface BatchRequestPayload {
   poolId: PoolId;
   parameters: string;
 }
+
+export interface EncryptedVolumeStruct {
+  ctHash: HexString;
+  securityZone: number;
+  utype: number;
+  signature: HexString;
+}
+
+export interface EigenBatchResponse {
+  attestation: HexString;
+  settlement: {
+    poolId: HexString;
+    batchId: HexString;
+    sqrtPriceX96: HexString;
+    deadline: number;
+    token0Flow: string;
+    token1Flow: string;
+  };
+  encryptedVolumes: {
+    token0: EncryptedVolumeStruct;
+    token1: EncryptedVolumeStruct;
+  };
+}

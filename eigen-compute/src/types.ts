@@ -6,16 +6,23 @@ export interface BatchMetadata {
   pythConfidenceBps?: number;
 }
 
+export interface BatchOrderInput {
+  sender: Hex;
+  zeroForOne: boolean;
+  amountSpecified: string;
+  tokenIn: Hex;
+  tokenOut: Hex;
+}
+
 export interface BatchRequest {
   poolId: Hex;
   batchId: Hex;
-  encryptedToken0Volume: string;
-  encryptedToken1Volume: string;
   strategyParams?: {
     baseSpreadBps?: number;
     inventorySkewBps?: number;
   };
   metadata: BatchMetadata;
+  orders: BatchOrderInput[];
 }
 
 export interface BatchSettlement {
@@ -27,11 +34,18 @@ export interface BatchSettlement {
   deadline: number;
 }
 
+export interface InEuint128Struct {
+  ctHash: Hex;
+  securityZone: number;
+  utype: number;
+  signature: Hex;
+}
+
 export interface BatchComputation {
   settlement: BatchSettlement;
-  sealedVolumes: {
-    token0: Hex;
-    token1: Hex;
+  encryptedVolumes: {
+    token0: InEuint128Struct;
+    token1: InEuint128Struct;
   };
   netFlow: {
     token0: bigint;
