@@ -1,16 +1,47 @@
-import crypto from "node:crypto";
-import type { BatchSettlement, Hex, InEuint128Struct } from "./types.js";
+import { encodeAbiParameters, keccak256, stringToHex } from "viem";
+import { mnemonicToAccount } from "viem/accounts";
+import type { AttestationInput, Hex } from "./types.js";
 
-export function createAttestation(input: {
-  settlement: BatchSettlement;
-  sealedVolumes: { token0: InEuint128Struct; token1: InEuint128Struct };
-  mnemonic: string | null;
-}): Hex {
-  const secret = input.mnemonic ?? "local-dev-mnemonic";
-  const hmac = crypto.createHmac("sha256", secret);
-  hmac.update(Buffer.from(JSON.stringify(input.settlement)));
-  hmac.update(Buffer.from(input.sealedVolumes.token0.ctHash.slice(2), "hex"));
-  hmac.update(Buffer.from(input.sealedVolumes.token1.ctHash.slice(2), "hex"));
-  return `0x${hmac.digest("hex")}`;
+interface AttestationConfig {
+  mnemonic: string;
+  mrEnclave: Hex;
+  mrSigner: Hex;
 }
 
+export function createAttestationFactory(config: AttestationConfig) {
+  const account = mnemonicToAccount(config.mnemonic);
+
+  return async function createAttestation(
+    input: AttestationInput
+  ): Promise<Hex> {
+    const message = JSON.stringify({
+      settlement: input.settlement,
+      sealed: {
+        token0: input.sealedVolumes.token0.ctHash,
+        token1: input.sealedVolumes.token1.ctHash,
+      },
+    });
+
+    const signature = await account.signMessage({ message });
+    const messageHash = keccak256(stringToHex(message));
+
+    return encodeAbiParameters(
+      [
+        { type: "string" },
+        { type: "bytes32" },
+        { type: "bytes" },
+        { type: "address" },
+        { type: "bytes32" },
+        { type: "bytes32" },
+      ],
+      [
+        message,
+        messageHash,
+        signature,
+        account.address,
+        config.mrEnclave,
+        config.mrSigner,
+      ]
+    ) as Hex;
+  };
+}

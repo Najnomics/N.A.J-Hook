@@ -1,11 +1,12 @@
 import { appConfig } from "./config.js";
-import { encryptVolume } from "./fhenix.js";
 import type {
   BatchRequest,
   BatchComputation,
   BatchSettlement,
   Hex,
   BatchOrderInput,
+  BatchMetadata,
+  InEuint128Struct,
 } from "./types.js";
 
 const Q96 = 2 ** 96;
@@ -38,9 +39,18 @@ function aggregateOrders(orders: BatchOrderInput[]): { token0: bigint; token1: b
   return { token0, token1 };
 }
 
-export function executeStrategy(batch: BatchRequest): BatchComputation {
+interface StrategyContext {
+  metadata: BatchMetadata;
+  encryptVolume: (value: bigint) => Promise<InEuint128Struct>;
+}
+
+export async function executeStrategy(
+  batch: BatchRequest,
+  ctx: StrategyContext
+): Promise<BatchComputation> {
   const flow = aggregateOrders(batch.orders);
-  const oraclePrice = batch.metadata.oraclePrice;
+  const metadata = ctx.metadata;
+  const oraclePrice = metadata.oraclePrice;
   const params = batch.strategyParams ?? {};
   const baseSpread = params.baseSpreadBps ?? appConfig.strategySpreadBps;
   const inventorySkew = params.inventorySkewBps ?? 0;
@@ -58,12 +68,12 @@ export function executeStrategy(batch: BatchRequest): BatchComputation {
     sqrtPriceX96,
     token0Flow: token0Flow.toString(),
     token1Flow: token1Flow.toString(),
-    deadline: batch.metadata.timestamp + 300,
+    deadline: metadata.timestamp + 300,
   };
 
   const encryptedVolumes = {
-    token0: encryptVolume(token0Flow < 0n ? -token0Flow : token0Flow, appConfig.fhenixSecret),
-    token1: encryptVolume(token1Flow < 0n ? -token1Flow : token1Flow, appConfig.fhenixSecret),
+    token0: await ctx.encryptVolume(token0Flow < 0n ? -token0Flow : token0Flow),
+    token1: await ctx.encryptVolume(token1Flow < 0n ? -token1Flow : token1Flow),
   };
 
   return {

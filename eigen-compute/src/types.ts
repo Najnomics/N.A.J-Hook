@@ -4,6 +4,7 @@ export interface BatchMetadata {
   oraclePrice: number;
   timestamp: number;
   pythConfidenceBps?: number;
+  priceUpdateData?: string[];
 }
 
 export interface BatchOrderInput {
@@ -21,7 +22,7 @@ export interface BatchRequest {
     baseSpreadBps?: number;
     inventorySkewBps?: number;
   };
-  metadata: BatchMetadata;
+  metadata?: Partial<BatchMetadata>;
   orders: BatchOrderInput[];
 }
 
@@ -51,5 +52,20 @@ export interface BatchComputation {
     token0: bigint;
     token1: bigint;
   };
+}
+
+export interface AttestationInput {
+  settlement: BatchSettlement;
+  sealedVolumes: {
+    token0: InEuint128Struct;
+    token1: InEuint128Struct;
+  };
+}
+
+export interface PythPriceData {
+  price: number;
+  confidence: number;
+  timestamp: number;
+  priceUpdateData?: string[];
 }
 
