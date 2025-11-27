@@ -4,13 +4,25 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "postinstall": "node scripts/postinstall.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "packageManager": "pnpm@10.17.1",
   "dependencies": {
-    "@pythnetwork/pyth-sdk-solidity": "^4.3.1"
+    "@fhenixprotocol/cofhe-contracts": "0.0.13",
+    "@pythnetwork/pyth-sdk-solidity": "^4.3.1",
+    "@openzeppelin/contracts": "^5.0.2",
+    "@openzeppelin/contracts-upgradeable": "^5.0.2",
+    "@uniswap/v4-core": "1.0.2",
+    "@uniswap/v4-periphery": "1.0.3",
+    "@uniswap/universal-router": "^2.1.0",
+    "@uniswap/permit2": "github:Uniswap/permit2",
+    "forge-std": "github:foundry-rs/forge-std",
+    "uniswap-hooks": "github:OpenZeppelin/uniswap-hooks",
+    "hookmate": "github:akshatmittal/hookmate",
+    "cofhe-foundry-mocks": "github:fhenixprotocol/cofhe-foundry-mocks"
   }
 }

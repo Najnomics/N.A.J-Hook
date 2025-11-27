@@ -3,6 +3,7 @@ pragma solidity 0.8.30;
 
 import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
 import {PoolId} from "@uniswap/v4-core/src/types/PoolId.sol";
+import {InEuint128} from "@fhenixprotocol/cofhe-contracts/FHE.sol";
 
 interface ISwapHandler {
     ////////////////////////////////////////////////////
@@ -22,7 +23,20 @@ interface ISwapHandler {
     struct CallbackData {
         PoolKey key;
         SwapData[] swaps;
+        bytes32 batchId;
     }
 
-    function postBatch(PoolId poolId, bytes calldata strategyUpdateParams, SwapData[] calldata swaps) external;
+    struct BatchMetadata {
+        bytes32 batchId;
+        bytes attestation;
+        InEuint128 encryptedToken0Volume;
+        InEuint128 encryptedToken1Volume;
+    }
+
+    function postBatch(
+        PoolId poolId,
+        bytes calldata strategyUpdateParams,
+        SwapData[] calldata swaps,
+        BatchMetadata calldata metadata
+    ) external;
 }

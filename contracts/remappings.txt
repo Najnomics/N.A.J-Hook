@@ -1,12 +1,16 @@
-@uniswap/v4-core/=lib/universal-router/lib/v4-periphery/lib/v4-core/
-@uniswap/v4-periphery/=lib/universal-router/lib/v4-periphery/
-@uniswap/permit2/=lib/universal-router/lib/permit2/
-@uniswap/universal-router/=lib/universal-router/contracts/
-permit2/=lib/universal-router/lib/permit2/
+@uniswap/v4-core/=node_modules/@uniswap/v4-core/
+@uniswap/v4-periphery/=node_modules/@uniswap/v4-periphery/
+@uniswap/permit2/=node_modules/@uniswap/permit2/
+@uniswap/universal-router/=node_modules/@uniswap/universal-router/contracts/
+permit2/=node_modules/@uniswap/permit2/
 
-@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/
+@openzeppelin/contracts/=node_modules/@openzeppelin/contracts/
+@openzeppelin/contracts-upgradeable/=node_modules/@openzeppelin/contracts-upgradeable/
+forge-std/=node_modules/forge-std/src/
 
 @pythnetwork/pyth-sdk-solidity/=node_modules/@pythnetwork/pyth-sdk-solidity
+@fhenixprotocol/cofhe-contracts/=node_modules/@fhenixprotocol/cofhe-contracts/
+@fhenixprotocol/cofhe-foundry-mocks/=node_modules/cofhe-foundry-mocks/src/
 
 @core/=src/
 @utils/=src/utils/

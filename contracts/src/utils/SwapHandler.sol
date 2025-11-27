@@ -110,7 +110,12 @@ contract SwapHandler is SwapActions, IUnlockCallback, ISwapHandler {
     /// @param poolId The pool ID to execute swaps on
     /// @param strategyUpdateParams Parameters to update the strategy adapter (new bid/ask prices)
     /// @param swaps Array of swap data to execute
-    function postBatch(PoolId poolId, bytes calldata strategyUpdateParams, SwapData[] calldata swaps) external onlyTEE {
+    function postBatch(
+        PoolId poolId,
+        bytes calldata strategyUpdateParams,
+        SwapData[] calldata swaps,
+        BatchMetadata calldata metadata
+    ) external onlyTEE {
         if (swaps.length == 0) revert SwapHandler__InvalidSwapData();
 
         INajLaunchpad.LaunchConfig memory config = najLaunchpad.getLaunchConfig(poolId);
@@ -132,9 +137,15 @@ contract SwapHandler is SwapActions, IUnlockCallback, ISwapHandler {
                 tickSpacing: 1,
                 hooks: IHooks(address(najHook))
             }),
-            swaps: swaps
+            swaps: swaps,
+            batchId: metadata.batchId
         });
+
+        najHook.submitBatchAttestation(
+            data.key, metadata.batchId, metadata.attestation, metadata.encryptedToken0Volume, metadata.encryptedToken1Volume
+        );
         poolManager.unlock(abi.encode(data));
+        najHook.finalizeBatch(data.key, metadata.batchId);
 
         emit BatchPosted(poolId, swaps.length, block.timestamp);
     }
@@ -148,7 +159,7 @@ contract SwapHandler is SwapActions, IUnlockCallback, ISwapHandler {
 
         // Execute each swap in the batch
         for (uint256 i; i < data.swaps.length; ++i) {
-            _executeSwap(data.key, data.swaps[i]);
+            _executeSwap(data.key, data.swaps[i], data.batchId);
         }
 
         return "";
@@ -161,7 +172,7 @@ contract SwapHandler is SwapActions, IUnlockCallback, ISwapHandler {
     /// @notice Execute a single swap from the batch
     /// @param key The pool key
     /// @param swapData The swap data
-    function _executeSwap(PoolKey memory key, SwapData memory swapData) internal {
+    function _executeSwap(PoolKey memory key, SwapData memory swapData, bytes32 batchId) internal virtual {
         // Pull funds from Router
         // Get absolute amount for exact input (amountSpecified is negative)
         uint256 amountIn =
@@ -171,7 +182,7 @@ contract SwapHandler is SwapActions, IUnlockCallback, ISwapHandler {
         IRouter(najRouter).pullFunds(key.toId(), swapData.sender, swapData.tokenIn, amountIn);
 
         // Execute swap
-        _swapExactInputUnlockedV4(swapData, key);
+        _swapExactInputUnlockedV4(swapData, key, batchId);
 
         // Swap successful
         emit SwapExecutedInBatch(key.toId(), swapData.sender);
