@@ -17,7 +17,7 @@ eigen-compute/
 ├── env.example               # Copy to .env before local dev (Eigen will auto-seal vars)
 ├── package.json / tsconfig   # TypeScript Express service
 └── src/
-    ├── attestation.ts        # Deterministic HMAC attestation (swap out with Eigen key)
+    ├── attestation.ts        # Eigen attestation builder (mnemonic-signed JSON blob)
     ├── config.ts             # Zod-validated env loader
     ├── fhenix.ts             # Helper mirroring fhe-hook-template encryption flow
     ├── strategy.ts           # Pricing + sealed volume computation
@@ -37,10 +37,18 @@ Key vars:
 
 | Variable | Description |
 | --- | --- |
-| `MNEMONIC` | Auto-generated Eigen app wallet (in production the enclave injects this). |
+| `MNEMONIC` | Eigen app wallet (the enclave signs attestations with it). |
 | `FHENIX_SHARED_SECRET` | Symmetric key that mirrors the Fhenix hook template for decrypting `InEuint128`. |
+| `COFHE_SIGNER_PRIVATE_KEY` | Private key that mimics the CoFHE verifier signer, used to create `InEuint128` signatures. |
+| `SWAP_HANDLER_ADDRESS` | On-chain Naj `SwapHandler` address encoded into the encrypted payloads. |
+| `CHAIN_ID` | Chain ID baked into ciphertext metadata to match on-chain verification. |
+| `COFHE_SECURITY_ZONE` | Security zone for encrypted inputs (0 by default). |
+| `PYTH_HERMES_URL` | Hermes endpoint used for fetching canonical Pyth prices. |
+| `PYTH_FEED_ID` | Feed ID for the oracle (e.g. ETH/USD). |
 | `CHAIN_RPC_URL_PUBLIC` | Public RPC endpoint disclosed for transparency (suffix `_PUBLIC`). |
 | `NAJ_LAUNCHPAD_ADDRESS_PUBLIC` | Launchpad address this enclave services (public). |
+| `MR_ENCLAVE_PUBLIC` | Enclave measurement hash surfaced on `/`. |
+| `MR_SIGNER_PUBLIC` | Signer measurement hash surfaced on `/`. |
 | `SEQUENCER_WEBHOOK` | Optional callback URL back to the Naj sequencer. |
 | `STRATEGY_SPREAD_BPS` | Default spread used by the template strategy. |
 | `BATCH_INTERVAL_MS` | How often the enclave polls for new work (if you wire a scheduler). |
@@ -52,6 +60,7 @@ cd eigen-compute
 pnpm install           # or npm install
 cp env.example .env
 pnpm dev               # runs tsx src/index.ts
+pnpm test              # REST smoke test (POST /batch validation)
 ```
 
 Test the batch endpoint:
@@ -62,7 +71,7 @@ curl -X POST http://localhost:8080/batch \
   -d '{
         "poolId": "0xabc...123",
         "batchId": "0x01",
-        "metadata": { "oraclePrice": 2000, "timestamp": 1730000000 },
+        "metadata": { "timestamp": 1730000000 },
         "orders": [
           {
             "sender": "0x1234...abcd",
@@ -135,8 +144,10 @@ Response:
 ## 6. Integration Notes
 
 - The Naj sequencer posts encrypted volumes to `POST /batch`. The payload matches the structure expected by `NajHook`’s `submitBatchAttestation`.
-- Attestations are generated deterministically via `attestation.ts`. Replace this with Eigen’s TEE key material once you wire the Eigen attestation reference implementation in `docs/eigencompute/howto/verify/verify-tee-signature.md`.
-- The Fhenix helper mimics the [`fhe-hook-template`](../CONTEXT/fhe-hook-template) so encrypted `InEuint128` values can be decrypted using the same shared secret for local smoke tests. Swap this logic for the actual CoFHE SDK when you have enclave bindings.
+- The service now fetches real-time prices from Pyth Hermes on every batch. Client-supplied prices are ignored; the response echoes the price, publish time, and confidence (BPS) that were applied.
+- `fhenix.ts` mirrors the [`fhe-hook-template`](../CONTEXT/fhe-hook-template)/`cofhe-foundry-mocks` flow: ciphertext hashes, metadata packing, and signatures match `createInEuint128`, so the Naj contracts can ingest the encrypted volumes directly.
+- `attestation.ts` signs a canonical JSON blob with the Eigen mnemonic and ABI-encodes the message, hash, signature, signer, `mrEnclave`, and `mrSigner`, following `verify-tee-signature.md`.
+- `pnpm test` runs a REST smoke test that ensures `/batch` rejects malformed payloads and returns metadata for valid batches.
 - Keep `_PUBLIC` env vars in sync with on-chain configuration so verifiers can audit the app, per EigenCloud guidance.
 
 ## 7. Further Reading
