@@ -2,6 +2,7 @@
 pragma solidity 0.8.30;
 
 import {Test, console2} from "forge-std/Test.sol";
+import {StdStorage, stdStorage} from "forge-std/StdStorage.sol";
 
 import {ERC20Mock} from "@mocks/ERC20Mock.sol";
 import {MockEigenVerifier} from "@mocks/MockEigenVerifier.sol";
@@ -16,6 +17,7 @@ import {Router} from "@core/Router.sol";
 import {SwapHandler} from "@utils/SwapHandler.sol";
 import {OracleStaticSpreadAdapter} from "@adapters/strategy/OracleStaticSpreadAdapter.sol";
 import {CoFheTest} from "@fhenixprotocol/cofhe-foundry-mocks/CoFheTest.sol";
+import {FHE, InEuint128, euint128} from "@fhenixprotocol/cofhe-contracts/FHE.sol";
 import {MockPyth} from "@mocks/MockPyth.sol";
 
 import {PoolId} from "@uniswap/v4-core/src/types/PoolId.sol";
@@ -28,6 +30,7 @@ import {ISwapHandler} from "@interfaces/ISwapHandler.sol";
 import {INajLaunchpad} from "@interfaces/INajLaunchpad.sol";
 
 contract NajLaunchpadTest is Test {
+    using stdStorage for StdStorage;
     NajLaunchpad najLaunchpad;
     NajHook najHook;
     Router najRouter;
@@ -267,6 +270,146 @@ contract NajLaunchpadTest is Test {
 
         // Verify batch was executed successfully
         assertTrue(true, "Batch executed successfully");
+    }
+
+    function test_submitBatchAttestationRevertsWithoutVerifier() external {
+        PoolId poolId = _launchPool(
+            INajLaunchpad.LaunchConfig({
+                token0: address(WETH),
+                token1: address(USDC),
+                token0SeedAmt: 100_000 ether,
+                token1SeedAmt: 300_000_000 ether,
+                strategyAdapter: address(strategyAdapter),
+                thresholdAdapter: address(0),
+                poolName: "Missing Verifier Pool",
+                curatorInfo: INajLaunchpad.CuratorInfo({
+                    curator: curator, name: "Test Curator", website: "https://test.com"
+                })
+            })
+        );
+
+        PoolKey memory key = najLaunchpad.getPoolKey(poolId);
+        stdstore.target(address(najHook)).sig("eigenVerifier()").checked_write(address(0));
+        assertEq(address(najHook.eigenVerifier()), address(0), "verifier should be cleared");
+
+        InEuint128 memory vol0 = cft.createInEuint128(1, 0, address(swapHandler));
+        InEuint128 memory vol1 = cft.createInEuint128(1, 0, address(swapHandler));
+
+        vm.startPrank(address(swapHandler));
+        vm.expectRevert(NajHook.NajHook__EigenVerifierNotConfigured.selector);
+        najHook.submitBatchAttestation(
+            key,
+            keccak256("missing-verifier"),
+            bytes(""),
+            vol0,
+            vol1
+        );
+        vm.stopPrank();
+    }
+
+    function test_submitBatchAttestationRevertsOnInvalidAttestation() external {
+        PoolId poolId = _launchPool(
+            INajLaunchpad.LaunchConfig({
+                token0: address(WETH),
+                token1: address(USDC),
+                token0SeedAmt: 100_000 ether,
+                token1SeedAmt: 300_000_000 ether,
+                strategyAdapter: address(strategyAdapter),
+                thresholdAdapter: address(0),
+                poolName: "Invalid Attestation",
+                curatorInfo: INajLaunchpad.CuratorInfo({
+                    curator: curator, name: "Test Curator", website: "https://test.com"
+                })
+            })
+        );
+
+        PoolKey memory key = najLaunchpad.getPoolKey(poolId);
+        mockEigenVerifier.setResult(false, bytes32("badEnclave"), bytes32("badSigner"));
+
+        InEuint128 memory vol0 = cft.createInEuint128(1, 0, address(swapHandler));
+        InEuint128 memory vol1 = cft.createInEuint128(1, 0, address(swapHandler));
+
+        vm.startPrank(address(swapHandler));
+        vm.expectRevert(NajHook.NajHook__InvalidAttestation.selector);
+        najHook.submitBatchAttestation(
+            key, keccak256("invalid-attestation"), abi.encodePacked("attn"), vol0, vol1
+        );
+        vm.stopPrank();
+
+        mockEigenVerifier.setResult(true, bytes32("mrEnclave"), bytes32("mrSigner"));
+    }
+
+    function test_finalizeBatchRevertsOnMismatchedId() external {
+        PoolId poolId = _launchPool(
+            INajLaunchpad.LaunchConfig({
+                token0: address(WETH),
+                token1: address(USDC),
+                token0SeedAmt: 100_000 ether,
+                token1SeedAmt: 300_000_000 ether,
+                strategyAdapter: address(strategyAdapter),
+                thresholdAdapter: address(0),
+                poolName: "Finalize Mismatch",
+                curatorInfo: INajLaunchpad.CuratorInfo({
+                    curator: curator, name: "Test Curator", website: "https://test.com"
+                })
+            })
+        );
+
+        PoolKey memory key = najLaunchpad.getPoolKey(poolId);
+        bytes32 batchId = keccak256("batch-match");
+
+        vm.startPrank(address(swapHandler));
+        najHook.submitBatchAttestation(
+            key,
+            batchId,
+            abi.encodePacked(batchId),
+            cft.createInEuint128(5, 0, address(swapHandler)),
+            cft.createInEuint128(7, 0, address(swapHandler))
+        );
+        vm.expectRevert(NajHook.NajHook__BatchMismatch.selector);
+        najHook.finalizeBatch(key, keccak256("wrong-batch"));
+        vm.stopPrank();
+    }
+
+    function test_finalizeBatchClearsEncryptedFlows() external {
+        PoolId poolId = _launchPool(
+            INajLaunchpad.LaunchConfig({
+                token0: address(WETH),
+                token1: address(USDC),
+                token0SeedAmt: 100_000 ether,
+                token1SeedAmt: 300_000_000 ether,
+                strategyAdapter: address(strategyAdapter),
+                thresholdAdapter: address(0),
+                poolName: "Finalize Clears",
+                curatorInfo: INajLaunchpad.CuratorInfo({
+                    curator: curator, name: "Test Curator", website: "https://test.com"
+                })
+            })
+        );
+
+        PoolKey memory key = najLaunchpad.getPoolKey(poolId);
+        bytes32 batchId = keccak256("finalize-clears");
+
+        vm.startPrank(address(swapHandler));
+        najHook.submitBatchAttestation(
+            key,
+            batchId,
+            abi.encodePacked(batchId),
+            cft.createInEuint128(10, 0, address(swapHandler)),
+            cft.createInEuint128(20, 0, address(swapHandler))
+        );
+        vm.stopPrank();
+
+        bytes32 poolIdBytes = PoolId.unwrap(poolId);
+        assertEq(najHook.sealedBatchIds(poolIdBytes), batchId, "batch should be sealed");
+        assertGt(euint128.unwrap(najHook.encryptedToken0Flow(poolIdBytes)), 0, "token0 flow seeded");
+
+        vm.prank(address(swapHandler));
+        najHook.finalizeBatch(key, batchId);
+
+        assertEq(najHook.sealedBatchIds(poolIdBytes), bytes32(0), "batch id cleared");
+        assertEq(euint128.unwrap(najHook.encryptedToken0Flow(poolIdBytes)), 0, "token0 cleared");
+        assertEq(euint128.unwrap(najHook.encryptedToken1Flow(poolIdBytes)), 0, "token1 cleared");
     }
 
     /// @notice Helper to prepare SwapHandler with tokens and approvals
