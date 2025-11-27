@@ -72,8 +72,8 @@ export async function executeStrategy(
   };
 
   const encryptedVolumes = {
-    token0: await ctx.encryptVolume(token0Flow < 0n ? -token0Flow : token0Flow),
-    token1: await ctx.encryptVolume(token1Flow < 0n ? -token1Flow : token1Flow),
+    token0: await ctx.encryptVolume(token0Flow),
+    token1: await ctx.encryptVolume(token1Flow),
   };
 
   return {

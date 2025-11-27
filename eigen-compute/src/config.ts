@@ -17,7 +17,6 @@ const hex32 = z
 
 const EnvSchema = z.object({
   MNEMONIC: z.string().min(1, "MNEMONIC required"),
-  FHENIX_SHARED_SECRET: z.string().min(1, "FHENIX_SHARED_SECRET required"),
   SEQUENCER_WEBHOOK: z.string().url().optional(),
   STRATEGY_SPREAD_BPS: z.coerce.number().min(0).max(10_000).default(35),
   BATCH_INTERVAL_MS: z.coerce.number().int().positive().default(5000),
@@ -28,6 +27,13 @@ const EnvSchema = z.object({
   NAJ_HOOK_ADDRESS_PUBLIC: hexString.optional(),
   PYTH_HERMES_URL: z.string().url(),
   PYTH_FEED_ID: hex32,
+  COFHE_RPC_URL: z.string().url(),
+  COFHE_ENVIRONMENT: z
+    .enum(["MOCK", "LOCAL", "TESTNET", "MAINNET"])
+    .optional(),
+  COFHE_URL: z.string().url().optional(),
+  COFHE_VERIFIER_URL: z.string().url().optional(),
+  COFHE_THRESHOLD_URL: z.string().url().optional(),
   COFHE_SIGNER_PRIVATE_KEY: z
     .string()
     .regex(/^0x[0-9a-fA-F]{64}$/, "Expected 32-byte hex private key"),
@@ -47,7 +53,6 @@ if (!parsed.success) {
 
 export const appConfig = {
   mnemonic: parsed.data.MNEMONIC,
-  fhenixSecret: parsed.data.FHENIX_SHARED_SECRET,
   sequencerWebhook: parsed.data.SEQUENCER_WEBHOOK ?? null,
   strategySpreadBps: parsed.data.STRATEGY_SPREAD_BPS,
   batchIntervalMs: parsed.data.BATCH_INTERVAL_MS,
@@ -58,9 +63,14 @@ export const appConfig = {
     feedId: parsed.data.PYTH_FEED_ID,
   },
   cofhe: {
+    rpcUrl: parsed.data.COFHE_RPC_URL,
     signerPrivateKey: parsed.data.COFHE_SIGNER_PRIVATE_KEY,
     securityZone: parsed.data.COFHE_SECURITY_ZONE,
     swapHandler: parsed.data.SWAP_HANDLER_ADDRESS,
+    environment: parsed.data.COFHE_ENVIRONMENT ?? undefined,
+    coFheUrl: parsed.data.COFHE_URL ?? null,
+    verifierUrl: parsed.data.COFHE_VERIFIER_URL ?? null,
+    thresholdNetworkUrl: parsed.data.COFHE_THRESHOLD_URL ?? null,
   },
   chainId: parsed.data.CHAIN_ID,
   attestation: {

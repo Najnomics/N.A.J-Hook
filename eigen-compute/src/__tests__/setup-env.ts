@@ -1,6 +1,7 @@
 process.env.MNEMONIC ??=
   "test test test test test test test test test test test junk";
-process.env.FHENIX_SHARED_SECRET ??= "local-test-secret";
+process.env.COFHE_RPC_URL ??= "http://127.0.0.1:8545";
+process.env.COFHE_ENVIRONMENT ??= "MOCK";
 process.env.PYTH_HERMES_URL ??= "https://hermes.pyth.network";
 process.env.PYTH_FEED_ID ??=
   "0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace";
