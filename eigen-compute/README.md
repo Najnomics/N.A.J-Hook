@@ -19,7 +19,7 @@ eigen-compute/
 └── src/
     ├── attestation.ts        # Eigen attestation builder (mnemonic-signed JSON blob)
     ├── config.ts             # Zod-validated env loader
-    ├── fhenix.ts             # Helper mirroring fhe-hook-template encryption flow
+    ├── fhenix.ts             # CoFHE client wiring (cofhejs + ethers provider)
     ├── strategy.ts           # Pricing + sealed volume computation
     ├── types.ts              # Batch request/response contracts
     └── index.ts              # Express HTTP entrypoint (GET /, POST /batch)
@@ -38,9 +38,11 @@ Key vars:
 | Variable | Description |
 | --- | --- |
 | `MNEMONIC` | Eigen app wallet (the enclave signs attestations with it). |
-| `FHENIX_SHARED_SECRET` | Symmetric key that mirrors the Fhenix hook template for decrypting `InEuint128`. |
-| `COFHE_SIGNER_PRIVATE_KEY` | Private key that mimics the CoFHE verifier signer, used to create `InEuint128` signatures. |
-| `SWAP_HANDLER_ADDRESS` | On-chain Naj `SwapHandler` address encoded into the encrypted payloads. |
+| `COFHE_RPC_URL` | RPC endpoint used by `cofhejs` to talk to the mock/testnet CoFHE contracts. |
+| `COFHE_ENVIRONMENT` | One of `MOCK`, `LOCAL`, `TESTNET`, `MAINNET` (applies documented defaults). |
+| `COFHE_URL` / `COFHE_VERIFIER_URL` / `COFHE_THRESHOLD_URL` | Optional overrides for the CoFHE coordinator, verifier, and threshold network endpoints. |
+| `COFHE_SIGNER_PRIVATE_KEY` | Private key that matches the on-chain `SwapHandler` (used to prove encryptions). |
+| `SWAP_HANDLER_ADDRESS` | Swap handler contract authorized inside NajHook/Router. |
 | `CHAIN_ID` | Chain ID baked into ciphertext metadata to match on-chain verification. |
 | `COFHE_SECURITY_ZONE` | Security zone for encrypted inputs (0 by default). |
 | `PYTH_HERMES_URL` | Hermes endpoint used for fetching canonical Pyth prices. |
@@ -144,9 +146,9 @@ Response:
 ## 6. Integration Notes
 
 - The Naj sequencer posts encrypted volumes to `POST /batch`. The payload matches the structure expected by `NajHook`’s `submitBatchAttestation`.
-- The service now fetches real-time prices from Pyth Hermes on every batch. Client-supplied prices are ignored; the response echoes the price, publish time, and confidence (BPS) that were applied.
-- `fhenix.ts` mirrors the [`fhe-hook-template`](../CONTEXT/fhe-hook-template)/`cofhe-foundry-mocks` flow: ciphertext hashes, metadata packing, and signatures match `createInEuint128`, so the Naj contracts can ingest the encrypted volumes directly.
-- `attestation.ts` signs a canonical JSON blob with the Eigen mnemonic and ABI-encodes the message, hash, signature, signer, `mrEnclave`, and `mrSigner`, following `verify-tee-signature.md`.
+- Prices are fetched live from Pyth Hermes on every batch. Client-supplied values are ignored; the response echoes the oracle publish time and confidence (converted to basis points).
+- `fhenix.ts` now delegates to the official `cofhejs` Node client, which implements the Security Zone semantics described in the Fhenix developer docs (`docs/devdocs/Writing Smart Contracts/Security-Zones.md`), reuses the `Encryptable.uint128` helpers from `cofhejs`, and returns the same `ctHash`/`signature` tuples that `FHE.asEuint128` expects (`docs/devdocs/FhenixJS/Encryption.md`, `docs/devdocs/FhenixJS/Fhenix-JS.mdx`).
+- `attestation.ts` signs a canonical JSON blob with the Eigen mnemonic and ABI-encodes the message, hash, signature, signer, `mrEnclave`, and `mrSigner`, following `docs/eigencompute/howto/verify/verify-tee-signature.md`.
 - `pnpm test` runs a REST smoke test that ensures `/batch` rejects malformed payloads and returns metadata for valid batches.
 - Keep `_PUBLIC` env vars in sync with on-chain configuration so verifiers can audit the app, per EigenCloud guidance.
 
