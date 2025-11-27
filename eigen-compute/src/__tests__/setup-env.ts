@@ -1,0 +1,17 @@
+process.env.MNEMONIC ??=
+  "test test test test test test test test test test test junk";
+process.env.FHENIX_SHARED_SECRET ??= "local-test-secret";
+process.env.PYTH_HERMES_URL ??= "https://hermes.pyth.network";
+process.env.PYTH_FEED_ID ??=
+  "0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace";
+process.env.COFHE_SIGNER_PRIVATE_KEY ??=
+  "0x6c4f1e685235620f4a7f17c7a1e9b1f9f2e9adbe5d7b3cfe8ad3c2fa90d6a5e2";
+process.env.SWAP_HANDLER_ADDRESS ??=
+  "0x0000000000000000000000000000000000000001";
+process.env.CHAIN_ID ??= "11155111";
+process.env.COFHE_SECURITY_ZONE ??= "0";
+process.env.MR_ENCLAVE_PUBLIC ??=
+  "0x0000000000000000000000000000000000000000000000000000000000000001";
+process.env.MR_SIGNER_PUBLIC ??=
+  "0x0000000000000000000000000000000000000000000000000000000000000002";
+
